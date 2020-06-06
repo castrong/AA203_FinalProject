@@ -1,0 +1,5 @@
+[deps]
+FIB = "13b007ba-0ca8-5af2-9adf-bc6a6301e25a"
+POMDPToolbox = "0729bffe-8e6b-52fa-a3fa-893719b744f4"
+POMDPs = "a93abf59-7444-517b-a68a-c42f96afdd7d"
+QuickPOMDPs = "8af83fb2-a731-493c-9049-9e19dbce6165"
