@@ -25,6 +25,7 @@ struct DroneMDP <: MDP{DroneState, Array{Symbol,1}}
     terminal_reward::Float64
     start_x::Int64
     start_y::Int64
+    permissible_map::Array{Bool, 2} # true means permissible
 end
 DroneMDP() = DroneMDP(2, 4, 4, 0.95, 100, 1, 1);
 
@@ -32,7 +33,11 @@ POMDPs.discount(m::DroneMDP) = m.discount
 POMDPs.isequal(s1::DroneState, s2::DroneState) = (s1.x == s2.x) && (s1.y == s2.y) && (s1.explored == s2.explored)
 
 # For a single state and action
-function transition_helper(x, y, w, h, a)
+function transition_helper(x, y, a, m)
+    w = m.w
+    h = m.h
+    permissible_map = m.permissible_map
+
     new_x = x
     new_y = y
     if a == :right
@@ -49,12 +54,17 @@ function transition_helper(x, y, w, h, a)
     new_x = min(max(new_x, 1), w)
     new_y = min(max(new_y, 1), h)
 
-    return new_x, new_y
+    # If it's permissible, update to that. If it's not, return your previous state
+    if (permissible_map[new_x, new_y])
+        return new_x, new_y
+    else
+        return x,y
+    end
 end
 
 function POMDPs.gen(m::DroneMDP, s, a, rng)
     # Transition the xs, ys
-    new_pairs = transition_helper.(s.x, s.y, m.w, m.h, a)
+    new_pairs = transition_helper.(s.x, s.y, a, [m])
     new_xs = [pair[1] for pair in new_pairs]
     new_ys = [pair[2] for pair in new_pairs]
     # Make sure all the states we're in are marked as explored
@@ -78,7 +88,7 @@ function POMDPs.gen(m::DroneMDP, s, a, rng)
 end
 
 # Terminate if we've explored all states
-POMDPs.isterminal(m::DroneMDP, s::DroneState) = (sum(s.explored)) == m.w * m.h
+POMDPs.isterminal(m::DroneMDP, s::DroneState) = (sum(s.explored)) == sum(m.permissible_map)
 
 function idx_to_action(idx)
     actions = [:up :down :left :right]
@@ -89,15 +99,47 @@ function POMDPs.actions(m::DroneMDP)
     return list_of_all_actions
 end
 
+function add_obstacle(permissible_map, center_x, center_y, radius_x, radius_y)
+    permissible_map[center_x-radius_x:center_x+radius_x, center_y-radius_y:center_y+radius_y] .= false
+    return permissible_map
+end
+function add_wall(permissible_map, x_wall, location)
+    if (x_wall)
+        permissible_map[location, :] .= false
+        return permissible_map
+    else
+        permissible_map[:, location] .= false
+        return permissible_map
+    end
+end
+
+function make_fun_room(w, h, wall_loc)
+
+    permissible_map = fill(true, w, h)
+    permissible_map = add_obstacle(permissible_map, 6, 6, 2, 2)
+    permissible_map = add_obstacle(permissible_map, 12, 12, 2, 2)
+
+    # permissible_map = fill(true, w, h)
+    # permissible_map = add_wall(permissible_map, true, wall_loc)
+    # permissible_map = add_wall(permissible_map, false, wall_loc)
+    # permissible_map[wall_loc,end-2] = true
+    # permissible_map[end-2, wall_loc] = true
+    # return permissible_map
+end
+
+
+
 ## TEST EXAMPLE
-n = 5
+n = 4
 w = 20
 h = 20
 terminal_reward = 1000
 discount_factor = 0.95
-max_steps = 200
+max_steps = 150
 start_x = round(Int, w/2);
 start_y = round(Int, h/2);
+
+permissible_map = make_fun_room(w, h, 4)
 
 list_of_all_actions = []
 for i = 0:4^n-1
@@ -105,7 +147,7 @@ for i = 0:4^n-1
     # println(list_of_all_actions[end])
 end
 
-drone_mdp = DroneMDP(n, w, h, discount_factor, terminal_reward, start_x, start_y)
+drone_mdp = DroneMDP(n, w, h, discount_factor, terminal_reward, start_x, start_y, permissible_map)
 initial_explored = zeros(Bool, w, h)
 initial_explored[start_x, start_y] = true # mark the start location as explored
 initial_state = DroneState(start_x * ones(n), start_y * ones(n), initial_explored)
@@ -125,9 +167,9 @@ for (s, a, r) in stepthrough(drone_mdp, planner, "s,a,r", max_steps=max_steps)
     @show s
     @show a
     @show r
+    println("Gap: ", sum(drone_mdp.permissible_map) - sum(s.explored))
     push!(state_list, s)
     push!(action_list, a)
-
 end
 
 # Append terminal state
@@ -138,204 +180,35 @@ if (isterminal(drone_mdp, next_state))
 end
 
 # Loop through and see
-anim = @animate for s in state_list
-    for i=1:n
-        plot!(rectangle(1,1,s.x[i]-1,s.y[i]-1), fillcolor = drone_colors[i],opacity=1,xlims=(0,w),ylims=(0,h),legend=false)
-        plot!(s.x[i], s.y[i], )
+
+# Fill in non-permissible states with black
+for i = 1:w
+    for j = 1:h
+        if !permissible_map[i, j]
+            plot!(rectangle(1, 1, i-1, j-1), fillcolor=Colors.RGB(0, 0, 0))
+        end
     end
 end
-gif(anim, "anim_fps15.gif", fps = 16)
+
+anim = @animate for (i, s) in enumerate(state_list)
+    old_state = i > 1 ? state_list[i-1] : nothing
+    for j=1:n
+        # Plot over old drone drawing
+        if i > 1
+            plot!(rectangle(1,1,old_state.x[j]-1,old_state.y[j]-1), fillcolor = drone_colors[j],opacity=1,xlims=(0,w),ylims=(0,h),legend=false)
+        end
+
+        plot!(rectangle(1,1,s.x[j]-1,s.y[j]-1), fillcolor = drone_colors[j],opacity=1,xlims=(0,w),ylims=(0,h),legend=false)
+        scatter!(rectangle(0.5, 0.5, s.x[j]-0.75, s.y[j]-0.75),  color="black", opacity=1)
 
 
-num_left_2 = []
-for s in state_list
-    push!(num_left, drone_mdp.h * drone_mdp.w - sum(s.explored))
+    end
 end
-plot(num_left, xlabel="Iteration", ylabel="Number Unexplored", title="Unexplored vs. Iteration")
+gif(anim, "anim_fps15.gif", fps = 4)
 
 
-
-## ANIMATION FUNCTIONS
-# using Plots
-#
-# plot(0:5,0:5,xlims=(0,10),ylims=(0,10))
-#
-# @gif for i = 1:10
-#     plot!(rectangle(i,i,0,0), opacity=.5)
+# num_left = []
+# for s in state_list
+#     push!(num_left, drone_mdp.h * drone_mdp.w - sum(s.explored))
 # end
-#
-# anim = @animate for i = 1:10
-#     if i == 1
-#         plot(rectangle(i,i,0,0), opacity=.5,xlims=(0,10),ylims=(0,10),legend=false)
-#     else
-#         plot!(rectangle(i,i,0,0), opacity=.5)
-#     end
-# end
-#
-# gif(anim, "anim_fps15.gif", fps = 2)
-
-## SIMPLE POLICY
-# policy that maps every input to a feed (true) action
-# policy = FunctionPolicy(s->fill(:right, n))
-
-
-## OLD STUFF
-# using Pkg
-# Pkg.activate("/Users/cstrong/Desktop/Stanford/FirstYear/SpringQuarter/AA203/AA203_FinalProject")
-#
-# using POMDPs
-# using POMDPToolbox
-#
-# struct GridWorldState
-#     x::Int64 # x position
-#     y::Int64 # y position
-#     done::Bool # are we in a terminal state?
-# end
-#
-# # initial state constructor
-# GridWorldState(x::Int64, y::Int64) = GridWorldState(x,y,false)
-# # checks if the position of two states are the same
-# posequal(s1::GridWorldState, s2::GridWorldState) = s1.x == s2.x && s1.y == s2.y
-#
-# # the grid world mdp type
-# mutable struct GridWorld <: MDP{GridWorldState, Symbol} # Note that our MDP is parametarized by the state and the action
-#     size_x::Int64 # x size of the grid
-#     size_y::Int64 # y size of the grid
-#     reward_states::Vector{GridWorldState} # the states in which agent recieves reward
-#     reward_values::Vector{Float64} # reward values for those states
-#     tprob::Float64 # probability of transitioning to the desired state
-#     discount_factor::Float64 # discount factor
-# end
-#
-# # we use key worded arguments so we can change any of the values we pass in
-# function GridWorld(;sx::Int64=10, # size_x
-#                     sy::Int64=10, # size_y
-#                     rs::Vector{GridWorldState}=[GridWorldState(4,3), GridWorldState(4,6), GridWorldState(9,3), GridWorldState(8,8)], # reward states
-#                     rv::Vector{Float64}=rv = [-10.,-5,10,3], # reward values
-#                     tp::Float64=0.7, # tprob
-#                     discount_factor::Float64=0.9)
-#     return GridWorld(sx, sy, rs, rv, tp, discount_factor)
-# end
-#
-# # we can now create a GridWorld mdp instance like this:
-# mdp = GridWorld()
-# mdp.reward_states # mdp contains all the defualt values from the constructor
-#
-# function POMDPs.states(mdp::GridWorld)
-#     s = GridWorldState[] # initialize an array of GridWorldStates
-#     # loop over all our states, remeber there are two binary variables:
-#     # done (d)
-#     for d = 0:1, y = 1:mdp.size_y, x = 1:mdp.size_x
-#         push!(s, GridWorldState(x,y,d))
-#     end
-#     return s
-# end;
-#
-# mdp = GridWorld()
-# state_space = states(mdp);
-# state_space[1]
-#
-# POMDPs.actions(mdp::GridWorld) = [:up, :down, :left, :right];
-#
-# # transition helpers
-# function inbounds(mdp::GridWorld,x::Int64,y::Int64)
-#     if 1 <= x <= mdp.size_x && 1 <= y <= mdp.size_y
-#         return true
-#     else
-#         return false
-#     end
-# end
-#
-# inbounds(mdp::GridWorld, state::GridWorldState) = inbounds(mdp, state.x, state.y);
-#
-# function POMDPs.transition(mdp::GridWorld, state::GridWorldState, action::Symbol)
-#     a = action
-#     x = state.x
-#     y = state.y
-#
-#     if state.done
-#         return SparseCat([GridWorldState(x, y, true)], [1.0])
-#     elseif state in mdp.reward_states
-#         return SparseCat([GridWorldState(x, y, true)], [1.0])
-#     end
-#
-#     neighbors = [
-#         GridWorldState(x+1, y, false), # right
-#         GridWorldState(x-1, y, false), # left
-#         GridWorldState(x, y-1, false), # down
-#         GridWorldState(x, y+1, false), # up
-#         ] # See Performance Note below
-#
-#     targets = Dict(:right=>1, :left=>2, :down=>3, :up=>4) # See Performance Note below
-#     target = targets[a]
-#
-#     probability = fill(0.0, 4)
-#
-#     if !inbounds(mdp, neighbors[target])
-#         # If would transition out of bounds, stay in
-#         # same cell with probability 1
-#         return SparseCat([GridWorldState(x, y)], [1.0])
-#     else
-#         probability[target] = mdp.tprob
-#
-#         oob_count = sum(!inbounds(mdp, n) for n in neighbors) # number of out of bounds neighbors
-#
-#         new_probability = (1.0 - mdp.tprob)/(3-oob_count)
-#
-#         for i = 1:4 # do not include neighbor 5
-#             if inbounds(mdp, neighbors[i]) && i != target
-#                 probability[i] = new_probability
-#             end
-#         end
-#     end
-#
-#     return SparseCat(neighbors, probability)
-# end;
-#
-#
-# function POMDPs.reward(mdp::GridWorld, state::GridWorldState, action::Symbol, statep::GridWorldState) #deleted action
-#     if state.done
-#         return 0.0
-#     end
-#     r = 0.0
-#     n = length(mdp.reward_states)
-#     for i = 1:n
-#         if posequal(state, mdp.reward_states[i])
-#             r += mdp.reward_values[i]
-#         end
-#     end
-#     return r
-# end;
-#
-# POMDPs.n_states(mdp::GridWorld) = 2*mdp.size_x*mdp.size_y
-# POMDPs.n_actions(mdp::GridWorld) = 4
-#
-# POMDPs.discount(mdp::GridWorld) = mdp.discount_factor;
-#
-# function POMDPs.stateindex(mdp::GridWorld, state::GridWorldState)
-#     sd = Int(state.done + 1)
-#     return sub2ind((mdp.size_x, mdp.size_y, 2), state.x, state.y, sd)
-# end
-# function POMDPs.actionindex(mdp::GridWorld, act::Symbol)
-#     if act==:up
-#         return 1
-#     elseif act==:down
-#         return 2
-#     elseif act==:left
-#         return 3
-#     elseif act==:right
-#         return 4
-#     end
-#     error("Invalid GridWorld action: $act")
-# end;
-#
-# POMDPs.isterminal(mdp::GridWorld, s::GridWorldState) = s.done
-#
-# mdp = GridWorld()
-# mdp.tprob=1.0
-# sim(mdp, GridWorldState(4,1), max_steps=10) do s
-#     println("state is: $s")
-#     a = :right
-#     println("moving $a")
-#     return a
-# end;
+# plot(num_left, xlabel="Iteration", ylabel="Number Unexplored", title="Unexplored vs. Iteration")
