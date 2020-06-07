@@ -26,6 +26,8 @@ struct DroneMDP <: MDP{DroneState, Array{Symbol,1}}
     start_x::Int64
     start_y::Int64
     permissible_map::Array{Bool, 2} # true means permissible
+    reward_map::Array{Float64, 2} # reward for exploring each point on map
+    potential_map::Array{Float64, 2} # difficulty of reaching each point on the map (ex. altitude)
 end
 DroneMDP() = DroneMDP(2, 4, 4, 0.95, 100, 1, 1);
 
@@ -71,12 +73,16 @@ function POMDPs.gen(m::DroneMDP, s, a, rng)
     # also accumulate the reward here
     new_explored = deepcopy(s.explored)
     reward = 0
-    for (new_x, new_y) in new_pairs
+    for (i, new_pair) in enumerate(new_pairs)
+        (new_x, new_y) = new_pair
+        # add reward if you explore a new location
         if (!new_explored[new_x, new_y])
-            reward = reward + 1#/(0.1 + norm([new_x-m.start_x; new_y-m.start_y], 2))
+            reward = reward + m.reward_map[new_x,new_y]
         end
         new_explored[new_x, new_y] = true # easy to extend to all states within radius
 
+        # subtract cost of moving
+        reward = reward - max(0,(m.potential_map[new_x, new_y] - m.potential_map[s.x[i], s.y[i]]))
     end
 
     # Create the new state
@@ -130,16 +136,34 @@ end
 
 
 ## TEST EXAMPLE
-n = 4
-w = 20
-h = 20
+n = 2
+w = 15
+h = 10
 terminal_reward = 1000
 discount_factor = 0.95
-max_steps = 150
-start_x = round(Int, w/2);
-start_y = round(Int, h/2);
+max_steps = 30
+start_x = round(Int, 6);
+start_y = round(Int, 6);
 
-permissible_map = make_fun_room(w, h, 4)
+permissible_map = ones(Bool,w,h)#make_fun_room(w, h, 4)
+reward_map = ones(w,h)
+potential_map = 1*ones(w,h)
+potential_map[2:end-1,2:end-1] .= 0
+# .05*[20 30 20 50 60 70 90 100 90 60;
+#  30 35 25 55 65 75 95 100 90 60;
+#  15 20 20 30 40 60 80 90 80 50;
+#  05 10 10 20 25 40 50 70 50 40;
+#  00 00 05 10 15 20 30 50 30 20;
+#  10 20 25 35 30 55 60 70 50 35;
+#  20 40 45 60 70 80 90 100 90 100;
+#  40 60 70 80 90 90 90 100 90 100;
+#  60 80 90 100 100 90 100 80 80 100;
+#  70 85 95 100 90 80 80 70 80 60;
+#  30 45 50 45 60 50 40 30 20 10;
+#  10 15 20 25 35 40 30 20 25 05;
+#  00 05 10 15 20 20 10 15 10 00;
+#  00 20 25 30 50 70 80 90 100 80;
+#  20 30 35 40 60 80 90 90 90 80]
 
 list_of_all_actions = []
 for i = 0:4^n-1
@@ -147,7 +171,7 @@ for i = 0:4^n-1
     # println(list_of_all_actions[end])
 end
 
-drone_mdp = DroneMDP(n, w, h, discount_factor, terminal_reward, start_x, start_y, permissible_map)
+drone_mdp = DroneMDP(n, w, h, discount_factor, terminal_reward, start_x, start_y, permissible_map, reward_map, potential_map)
 initial_explored = zeros(Bool, w, h)
 initial_explored[start_x, start_y] = true # mark the start location as explored
 initial_state = DroneState(start_x * ones(n), start_y * ones(n), initial_explored)
@@ -158,7 +182,6 @@ planner = solve(solver, drone_mdp)
 # simulate
 plot([-1],[-1], aspect_ratio=1)
 drone_colors = [RGBA(rand(),rand(),rand(),1) for i=1:n]
-
 
 state_list = []
 action_list = []
