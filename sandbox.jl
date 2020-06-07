@@ -2,6 +2,9 @@ using POMDPs
 using Random # for AbstractRNG
 using POMDPModelTools # for Deterministic
 using MCTS # Monte Carlo Tree Search
+using POMDPSimulators
+using POMDPPolicies
+using Colors
 
 mutable struct DroneState
     x::Array{Int64, 1}
@@ -9,15 +12,16 @@ mutable struct DroneState
     explored::Array{Bool,2}
 end
 
-
 struct DroneMDP <: MDP{DroneState, Array{Symbol,1}}
     n::Int64
     w::Int64
     h::Int64
     discount::Float64
 end
-
 DroneMDP() = DroneMDP(2, 4, 4, 0.95);
+
+POMDPs.discount(m::DroneMDP) = m.discount
+POMDPs.isequal(s1::DroneState, s2::DroneState) = (s1.x == s2.x) && (s1.y == s2.y) && (s1.explored == s2.explored)
 
 # For a single state and action
 function transition_helper(x, y, w, h, a)
@@ -59,43 +63,87 @@ function POMDPs.gen(m::DroneMDP, s, a, rng)
     end
     # Create the new state
     new_state = DroneState(new_xs, new_ys, new_explored)
-    return (sp=new_state, r=reward)
+    return (sp=new_state, r= 10*reward + sum(new_explored))
 end
 
 # Terminate if we've explored all states
-POMDPs.isterminal(m, s) = (sum(s.explored) == m.w * m.h)
+POMDPs.isterminal(m::DroneMDP, s::DroneState) = (sum(s.explored)) == m.w * m.h
 
-n = 2
-w = 4
-h = 4
+function idx_to_action(idx)
+    actions = [:up :down :left :right]
+    return actions[idx+1]
+end
+
+function POMDPs.actions(m::DroneMDP)
+    return list_of_all_actions
+end
+
+## TEST EXAMPLE
+n = 4
+w = 10
+h = 10
 discount_factor = 0.95
+
+list_of_all_actions = []
+for i = 0:4^n-1
+    push!(list_of_all_actions, idx_to_action.(digits(i, base = 4, pad = n)))
+    # println(list_of_all_actions[end])
+end
 
 drone_mdp = DroneMDP(n, w, h, discount_factor)
 initial_state = DroneState(ones(n), ones(n), zeros(Bool, w, h))
 POMDPs.initialstate_distribution(m::DroneMDP) = Deterministic(initial_state)
+solver = MCTSSolver(n_iterations=1000, depth=20, exploration_constant=5.0)
+planner = solve(solver, drone_mdp)
 
-using POMDPSimulators
-using POMDPPolicies
+# simulate
+plot([-1],[-1])
+drone_colors = [RGBA(rand(),rand(),rand(),1) for i=1:n]
 
-# policy that maps every input to a feed (true) action
-policy = FunctionPolicy(s->fill(:right, n))
-
-for (s, a, r) in stepthrough(drone_mdp, policy, "s,a,r", max_steps=10)
-
-
+anim = @animate for (s, a, r) in stepthrough(drone_mdp, planner, "s,a,r", max_steps=40)
+    global first_done
     @show s
     @show a
     @show r
     println()
+
+    for i=1:n
+        plot!(rectangle(1,1,s.x[i]-1,s.y[i]-1), fillcolor = drone_colors[i],opacity=1,xlims=(0,w),ylims=(0,h),legend=false)
+    end
+    if POMDPs.isterminal(drone_mdp, s)
+        break
+    end
 end
 
+gif(anim, "anim_fps15.gif", fps = 2)
 
 
+## ANIMATION FUNCTIONS
+# using Plots
+# rectangle(w, h, x, y) = Shape(x .+ [0,w,w,0], y .+ [0,0,h,h])
+#
+# plot(0:5,0:5,xlims=(0,10),ylims=(0,10))
+#
+# @gif for i = 1:10
+#     plot!(rectangle(i,i,0,0), opacity=.5)
+# end
+#
+# anim = @animate for i = 1:10
+#     if i == 1
+#         plot(rectangle(i,i,0,0), opacity=.5,xlims=(0,10),ylims=(0,10),legend=false)
+#     else
+#         plot!(rectangle(i,i,0,0), opacity=.5)
+#     end
+# end
+#
+# gif(anim, "anim_fps15.gif", fps = 2)
+
+## SIMPLE POLICY
+# policy that maps every input to a feed (true) action
+# policy = FunctionPolicy(s->fill(:right, n))
 
 
-
-
-
+## OLD STUFF
 # using Pkg
 # Pkg.activate("/Users/cstrong/Desktop/Stanford/FirstYear/SpringQuarter/AA203/AA203_FinalProject")
 #
