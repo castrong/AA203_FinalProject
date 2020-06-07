@@ -5,6 +5,7 @@ using MCTS # Monte Carlo Tree Search
 using POMDPSimulators
 using POMDPPolicies
 using Colors
+using Plots
 
 mutable struct DroneState
     x::Array{Int64, 1}
