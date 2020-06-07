@@ -6,6 +6,10 @@ using POMDPSimulators
 using POMDPPolicies
 using Colors
 using Plots
+using LinearAlgebra
+
+# Rectangle for plotting
+rectangle(w, h, x, y) = Shape(x .+ [0,w,w,0], y .+ [0,0,h,h])
 
 mutable struct DroneState
     x::Array{Int64, 1}
@@ -18,8 +22,11 @@ struct DroneMDP <: MDP{DroneState, Array{Symbol,1}}
     w::Int64
     h::Int64
     discount::Float64
+    terminal_reward::Float64
+    start_x::Int64
+    start_y::Int64
 end
-DroneMDP() = DroneMDP(2, 4, 4, 0.95);
+DroneMDP() = DroneMDP(2, 4, 4, 0.95, 100, 1, 1);
 
 POMDPs.discount(m::DroneMDP) = m.discount
 POMDPs.isequal(s1::DroneState, s2::DroneState) = (s1.x == s2.x) && (s1.y == s2.y) && (s1.explored == s2.explored)
@@ -50,21 +57,24 @@ function POMDPs.gen(m::DroneMDP, s, a, rng)
     new_pairs = transition_helper.(s.x, s.y, m.w, m.h, a)
     new_xs = [pair[1] for pair in new_pairs]
     new_ys = [pair[2] for pair in new_pairs]
-
     # Make sure all the states we're in are marked as explored
     # also accumulate the reward here
     new_explored = deepcopy(s.explored)
     reward = 0
     for (new_x, new_y) in new_pairs
         if (!new_explored[new_x, new_y])
-            reward = reward + 1
+            reward = reward + 1#/(0.1 + norm([new_x-m.start_x; new_y-m.start_y], 2))
         end
         new_explored[new_x, new_y] = true # easy to extend to all states within radius
 
     end
+
     # Create the new state
     new_state = DroneState(new_xs, new_ys, new_explored)
-    return (sp=new_state, r= 10*reward + sum(new_explored))
+    if (POMDPs.isterminal(m, new_state))
+        reward = reward + m.terminal_reward
+    end
+    return (sp=new_state, r=reward)
 end
 
 # Terminate if we've explored all states
@@ -80,10 +90,14 @@ function POMDPs.actions(m::DroneMDP)
 end
 
 ## TEST EXAMPLE
-n = 4
-w = 10
-h = 10
+n = 5
+w = 20
+h = 20
+terminal_reward = 1000
 discount_factor = 0.95
+max_steps = 200
+start_x = round(Int, w/2);
+start_y = round(Int, h/2);
 
 list_of_all_actions = []
 for i = 0:4^n-1
@@ -91,37 +105,58 @@ for i = 0:4^n-1
     # println(list_of_all_actions[end])
 end
 
-drone_mdp = DroneMDP(n, w, h, discount_factor)
-initial_state = DroneState(ones(n), ones(n), zeros(Bool, w, h))
+drone_mdp = DroneMDP(n, w, h, discount_factor, terminal_reward, start_x, start_y)
+initial_explored = zeros(Bool, w, h)
+initial_explored[start_x, start_y] = true # mark the start location as explored
+initial_state = DroneState(start_x * ones(n), start_y * ones(n), initial_explored)
 POMDPs.initialstate_distribution(m::DroneMDP) = Deterministic(initial_state)
-solver = MCTSSolver(n_iterations=1000, depth=20, exploration_constant=5.0)
+solver = MCTSSolver(n_iterations=3000, depth=20, exploration_constant=1.0)
 planner = solve(solver, drone_mdp)
 
 # simulate
-plot([-1],[-1])
+plot([-1],[-1], aspect_ratio=1)
 drone_colors = [RGBA(rand(),rand(),rand(),1) for i=1:n]
 
-anim = @animate for (s, a, r) in stepthrough(drone_mdp, planner, "s,a,r", max_steps=40)
-    global first_done
+
+state_list = []
+action_list = []
+
+for (s, a, r) in stepthrough(drone_mdp, planner, "s,a,r", max_steps=max_steps)
     @show s
     @show a
     @show r
-    println()
+    push!(state_list, s)
+    push!(action_list, a)
 
-    for i=1:n
-        plot!(rectangle(1,1,s.x[i]-1,s.y[i]-1), fillcolor = drone_colors[i],opacity=1,xlims=(0,w),ylims=(0,h),legend=false)
-    end
-    if POMDPs.isterminal(drone_mdp, s)
-        break
-    end
 end
 
-gif(anim, "anim_fps15.gif", fps = 2)
+# Append terminal state
+step_forward = POMDPs.gen(drone_mdp, state_list[end], action_list[end], -1)
+next_state = step_forward.sp
+if (isterminal(drone_mdp, next_state))
+    push!(state_list, next_state)
+end
+
+# Loop through and see
+anim = @animate for s in state_list
+    for i=1:n
+        plot!(rectangle(1,1,s.x[i]-1,s.y[i]-1), fillcolor = drone_colors[i],opacity=1,xlims=(0,w),ylims=(0,h),legend=false)
+        plot!(s.x[i], s.y[i], )
+    end
+end
+gif(anim, "anim_fps15.gif", fps = 16)
+
+
+num_left_2 = []
+for s in state_list
+    push!(num_left, drone_mdp.h * drone_mdp.w - sum(s.explored))
+end
+plot(num_left, xlabel="Iteration", ylabel="Number Unexplored", title="Unexplored vs. Iteration")
+
 
 
 ## ANIMATION FUNCTIONS
 # using Plots
-# rectangle(w, h, x, y) = Shape(x .+ [0,w,w,0], y .+ [0,0,h,h])
 #
 # plot(0:5,0:5,xlims=(0,10),ylims=(0,10))
 #
